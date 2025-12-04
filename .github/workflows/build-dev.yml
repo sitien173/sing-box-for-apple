@@ -32,7 +32,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: 'stable'
+          go-version: '1.23.x'
+          cache: false
       
       - name: Install Dependencies
         run: |
@@ -44,8 +45,8 @@ jobs:
           
           # Install gomobile for building Libbox.xcframework
           echo "Installing gomobile..."
-          go install -v github.com/sagernet/gomobile/cmd/gomobile@v0.1.7
-          go install -v github.com/sagernet/gomobile/cmd/gobind@v0.1.7
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
           
           # Initialize gomobile
           $(go env GOPATH)/bin/gomobile init
