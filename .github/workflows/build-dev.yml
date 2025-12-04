@@ -1,181 +1,258 @@
-name: Build unsigned IPA (dev) — diagnostics + robust detect
+name: Build Unsigned IPA (Dev)
 
 on:
+  push:
+    branches:
+      - dev
+      - develop
+      - main
+  pull_request:
+    branches:
+      - dev
+      - develop
+      - main
   workflow_dispatch:
-    inputs:
-      project:
-        description: 'Optional: .xcodeproj or .xcworkspace (leave empty to auto-detect)'
-        required: false
-        default: ''
-      scheme:
-        description: 'Optional: scheme name (leave empty to auto-detect)'
-        required: false
-        default: ''
-      configuration:
-        description: 'Build configuration'
-        required: false
-        default: 'Release'
-      archive-path:
-        description: 'Archive output path'
-        required: false
-        default: './build/Unsigned.xcarchive'
 
 jobs:
-  build-unsigned-ipa:
-    runs-on: macos-latest
-    env:
-      DEFAULT_PROJECT: sing-box.xcodeproj
-      PAYLOAD_DIR: ./build/Payload
-      OUTPUT_IPA: ./build/unsigned.ipa
-
+  build:
+    name: Build Unsigned IPA
+    runs-on: macos-14
+    
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-
-      - name: Save inputs to env
-        run: |
-          echo "INPUT_PROJECT=${{ github.event.inputs.project }}" >> $GITHUB_ENV
-          echo "INPUT_SCHEME=${{ github.event.inputs.scheme }}" >> $GITHUB_ENV
-          echo "CONFIGURATION=${{ github.event.inputs.configuration || 'Release' }}" >> $GITHUB_ENV
-          echo "ARCHIVE_PATH=${{ github.event.inputs['archive-path'] || './build/Unsigned.xcarchive' }}" >> $GITHUB_ENV
-
-      # --- Diagnostic steps (safe, quick) ---
-      - name: Debug — top-level files
-        run: |
-          echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
-          ls -la
-
-      - name: Debug — recursive (depth 3) file list
-        run: |
-          find . -maxdepth 3 -print | sed -n '1,500p' > ci-file-list.txt || true
-
-      - name: Debug — xcodebuild -list (workspace & project)
-        run: |
-          echo "=== xcodebuild -list output ===" > xcodebuild-list.txt || true
-          for w in *.xcworkspace; do
-            echo "workspace: $w" >> xcodebuild-list.txt
-            xcodebuild -list -workspace "$w" >> xcodebuild-list.txt 2>&1 || true
-          done
-          for p in *.xcodeproj; do
-            echo "project: $p" >> xcodebuild-list.txt
-            xcodebuild -list -project "$p" >> xcodebuild-list.txt 2>&1 || true
-          done
-          git -C . log -n1 --pretty=fuller >> xcodebuild-list.txt || true
-
-      - name: Upload debug artifacts
-        uses: actions/upload-artifact@v4
+          submodules: recursive
+      
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
         with:
-          name: ci-debug
-          path: |
-            ci-file-list.txt
-            xcodebuild-list.txt
-
-      # --- End diagnostics; now robust detection + build ---
-      - name: Install CocoaPods if Podfile present
+          xcode-version: latest-stable
+      
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: false
+      
+      - name: Install Dependencies
         run: |
-          if [ -f Podfile ]; then
-            sudo gem install cocoapods -v '>=1.11' --no-document || true
-            pod install --repo-update || true
+          # Install CocoaPods if Podfile exists
+          if [ -f "Podfile" ]; then
+            sudo gem install cocoapods
+            pod install
           fi
-
-      - name: Robust auto-detect project/workspace & scheme
-        id: detect
+          
+          # Install gomobile for building Libbox.xcframework
+          echo "Installing gomobile..."
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          
+          # Initialize gomobile
+          $(go env GOPATH)/bin/gomobile init
+          
+          # Swift Package Manager dependencies (handled by Xcode)
+          echo "Swift Package Manager dependencies will be resolved by Xcode"
+      
+      - name: Build Libbox.xcframework
         run: |
-          set -euo pipefail
-          # project/workspace selection
-          if [ -n "${INPUT_PROJECT}" ]; then
-            echo "PROJECT=${INPUT_PROJECT}" >> $GITHUB_ENV
-          else
-            if ls -1 *.xcworkspace 2>/dev/null | grep -q .; then
-              WS=$(ls -1 *.xcworkspace | head -n1)
-              echo "PROJECT=$WS" >> $GITHUB_ENV
-            elif ls -1 *.xcodeproj 2>/dev/null | grep -q .; then
-              PJ=$(ls -1 *.xcodeproj | head -n1)
-              echo "PROJECT=$PJ" >> $GITHUB_ENV
+          echo "Building Libbox.xcframework..."
+          
+          # Check if there's a Makefile with lib or lib_ios target
+          if [ -f "Makefile" ]; then
+            echo "Makefile found, checking for build targets..."
+            
+            if grep -q "^lib:" Makefile || grep -q "^lib_ios:" Makefile; then
+              echo "Using Makefile to build Libbox..."
+              make lib 2>/dev/null || make lib_ios 2>/dev/null || {
+                echo "Makefile targets failed, trying manual build..."
+                USE_MANUAL=true
+              }
             else
-              echo "PROJECT=${DEFAULT_PROJECT}" >> $GITHUB_ENV
+              echo "No lib target found in Makefile"
+              USE_MANUAL=true
             fi
-          fi
-
-          # scheme selection
-          if [ -n "${INPUT_SCHEME}" ]; then
-            echo "SCHEME=${INPUT_SCHEME}" >> $GITHUB_ENV
-            exit 0
-          fi
-
-          if [[ "${PROJECT}" == *.xcworkspace ]]; then
-            XOUT=$(xcodebuild -list -workspace "${PROJECT}" 2>/dev/null || true)
           else
-            XOUT=$(xcodebuild -list -project "${PROJECT}" 2>/dev/null || true)
+            echo "No Makefile found"
+            USE_MANUAL=true
           fi
-          SCHEME_NAME=$(echo "$XOUT" | sed -n '/Schemes:/,$p' | tail -n +2 | sed -n '1p' | xargs || true)
-          if [ -n "$SCHEME_NAME" ]; then
-            echo "SCHEME=$SCHEME_NAME" >> $GITHUB_ENV
-            exit 0
-          fi
-
-          # scan shared schemes
-          for P in *.xcodeproj *.xcworkspace; do
-            if [ -d "$P/xcshareddata/xcschemes" ]; then
-              fs=$(ls "$P/xcshareddata/xcschemes"/*.xcscheme 2>/dev/null | head -n1 || true)
-              if [ -n "$fs" ]; then
-                bn=$(basename "$fs" .xcscheme)
-                echo "SCHEME=$bn" >> $GITHUB_ENV
-                exit 0
+          
+          # If Makefile approach didn't work, build manually
+          if [ "$USE_MANUAL" = "true" ]; then
+            echo "Building libbox manually from sing-box repository..."
+            
+            # Create a temporary directory for the build
+            mkdir -p /tmp/sing-box-build
+            cd /tmp/sing-box-build
+            
+            # Clone sing-box repository
+            echo "Cloning sing-box repository..."
+            git clone --depth 1 https://github.com/SagerNet/sing-box.git
+            cd sing-box
+            
+            # Try using gomobile bind directly (most reliable method)
+            echo "Using gomobile bind to build libbox..."
+            
+            # Initialize gomobile
+            echo "Initializing gomobile..."
+            $(go env GOPATH)/bin/gomobile init
+            
+            # Build for iOS using gomobile bind
+            echo "Building libbox.xcframework for iOS..."
+            $(go env GOPATH)/bin/gomobile bind \
+              -target=ios \
+              -ldflags="-s -w" \
+              -o Libbox.xcframework \
+              github.com/sagernet/sing-box/experimental/libbox || {
+              echo "❌ Error: gomobile bind failed"
+              echo "Trying alternative build method..."
+              
+              # Fallback: try build_libbox if it exists
+              if [ -f "cmd/internal/build_libbox/main.go" ]; then
+                echo "Attempting build_libbox tool..."
+                go run ./cmd/internal/build_libbox -target ios 2>&1 || {
+                  echo "❌ Error: build_libbox also failed"
+                  exit 1
+                }
+              else
+                echo "❌ Error: No alternative build method available"
+                exit 1
               fi
+            }
+            
+            # Copy the built framework back to the project
+            if [ -d "Libbox.xcframework" ]; then
+              echo "Copying Libbox.xcframework to workspace..."
+              cp -r Libbox.xcframework $GITHUB_WORKSPACE/
+              cd $GITHUB_WORKSPACE
+            else
+              echo "❌ Error: Libbox.xcframework was not created after build"
+              ls -la
+              exit 1
             fi
-          done
-
-          # last resort: project basename
-          if [[ "${PROJECT}" == *.xcodeproj ]]; then
-            PRJ_BASE=$(basename "${PROJECT}" .xcodeproj)
-            echo "SCHEME=$PRJ_BASE" >> $GITHUB_ENV
-            exit 0
           fi
-
-          echo "ERROR: could not detect scheme; set 'scheme' input" >&2
-          exit 1
-
-      - name: Show Xcode version
-        run: xcodebuild -version || true
-
-      - name: Clean
-        run: |
-          if [[ "${PROJECT}" == *.xcworkspace ]]; then
-            xcodebuild clean -workspace "${PROJECT}" -scheme "${SCHEME}" -configuration "${CONFIGURATION}" || true
+          
+          # Verify the framework exists in the workspace
+          if [ -d "Libbox.xcframework" ]; then
+            echo "✅ Libbox.xcframework built successfully"
+            ls -la Libbox.xcframework
           else
-            xcodebuild clean -project "${PROJECT}" -scheme "${SCHEME}" -configuration "${CONFIGURATION}" || true
+            echo "❌ Error: Libbox.xcframework was not found in workspace"
+            exit 1
           fi
-
-      - name: Archive (.xcarchive) with signing disabled
+      
+      - name: Display Xcode Version
         run: |
-          mkdir -p "$(dirname "${ARCHIVE_PATH}")"
-          if [[ "${PROJECT}" == *.xcworkspace ]]; then
-            xcodebuild archive -workspace "${PROJECT}" -scheme "${SCHEME}" -configuration "${CONFIGURATION}" -archivePath "${ARCHIVE_PATH}" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" | tee xcodebuild-archive.log
+          xcodebuild -version
+          swift --version
+      
+      - name: List Repository Contents
+        run: |
+          echo "=== Root Directory Contents ==="
+          ls -la
+          echo ""
+          echo "=== Looking for Xcode projects ==="
+          find . -maxdepth 2 -name "*.xcodeproj" -o -name "*.xcworkspace"
+      
+      - name: List Available Schemes
+        run: |
+          if compgen -G "*.xcworkspace" > /dev/null; then
+            WORKSPACE=$(ls -d *.xcworkspace | head -n 1)
+            echo "Found workspace: $WORKSPACE"
+            xcodebuild -workspace "$WORKSPACE" -list
+          elif compgen -G "*.xcodeproj" > /dev/null; then
+            PROJECT=$(ls -d *.xcodeproj | head -n 1)
+            echo "Found project: $PROJECT"
+            xcodebuild -project "$PROJECT" -list
           else
-            xcodebuild archive -project "${PROJECT}" -scheme "${SCHEME}" -configuration "${CONFIGURATION}" -archivePath "${ARCHIVE_PATH}" CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" | tee xcodebuild-archive.log
+            echo "No Xcode workspace or project found in root directory"
+            echo "Searching subdirectories..."
+            find . -maxdepth 2 -name "*.xcodeproj" -o -name "*.xcworkspace"
           fi
-
-      - name: Find .app and package unsigned IPA
+      
+      - name: Build iOS App (Unsigned)
         run: |
-          APP_PATH=$(find "${ARCHIVE_PATH}" -type d -name "*.app" | head -n1 || true)
+          # Determine if using workspace or project
+          if compgen -G "*.xcworkspace" > /dev/null; then
+            WORKSPACE=$(ls -d *.xcworkspace | head -n 1)
+            BUILD_CMD="-workspace $WORKSPACE"
+            echo "Using workspace: $WORKSPACE"
+          elif compgen -G "*.xcodeproj" > /dev/null; then
+            PROJECT=$(ls -d *.xcodeproj | head -n 1)
+            BUILD_CMD="-project $PROJECT"
+            echo "Using project: $PROJECT"
+          else
+            echo "Error: No .xcworkspace or .xcodeproj found"
+            exit 1
+          fi
+          
+          # Build the app for iOS
+          # Note: Replace "SFI" with the actual scheme name from your project
+          xcodebuild clean build \
+            $BUILD_CMD \
+            -scheme "SFI" \
+            -sdk iphoneos \
+            -configuration Debug \
+            -destination "generic/platform=iOS" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            -derivedDataPath ./build
+      
+      - name: Create IPA from .app
+        run: |
+          # Find the .app bundle
+          APP_PATH=$(find ./build -name "*.app" -type d | head -n 1)
+          
           if [ -z "$APP_PATH" ]; then
-            find "${ARCHIVE_PATH}" -ls || true
-            exit 2
+            echo "Error: No .app bundle found"
+            echo "Searching in build directory..."
+            find ./build -type d -name "*.app"
+            exit 1
           fi
-          rm -rf ./build
-          mkdir -p "${PAYLOAD_DIR}"
-          cp -R "$APP_PATH" "${PAYLOAD_DIR}/"
-          pushd ./build
-          zip -qry unsigned.ipa Payload
-          popd
-
-      - name: Upload artifacts (ipa + logs)
+          
+          echo "Found app at: $APP_PATH"
+          
+          # Create Payload directory
+          mkdir -p Payload
+          cp -r "$APP_PATH" Payload/
+          
+          # Create IPA
+          zip -r unsigned.ipa Payload
+          
+          # Clean up
+          rm -rf Payload
+          
+          # Display IPA info
+          ls -lh unsigned.ipa
+      
+      - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: unsigned-ipa
-          path: |
-            ./build/unsigned.ipa
-            xcodebuild-archive.log
+          name: unsigned-ipa-dev-${{ github.sha }}
+          path: unsigned.ipa
+          retention-days: 30
+      
+      - name: Upload Build Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ github.sha }}
+          path: ./build/Logs
+          retention-days: 7
+      
+      - name: Build Summary
+        if: success()
+        run: |
+          echo "## Build Successful! :rocket:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Information" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **IPA Size:** $(du -h unsigned.ipa | cut -f1)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Download" >> $GITHUB_STEP_SUMMARY
+          echo "The unsigned IPA is available as an artifact in this workflow run." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> **Note:** This is an unsigned build for development purposes only." >> $GITHUB_STEP_SUMMARY
