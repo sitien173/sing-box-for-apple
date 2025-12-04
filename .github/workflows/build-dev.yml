@@ -6,7 +6,7 @@ on:
       - main
       - dev
     paths-ignore:
-      - '**. md'
+      - '**.md'
       - 'LICENSE'
   pull_request:
     branches:
@@ -22,11 +22,17 @@ on:
         options:
           - Debug
           - Release
+      libbox_version:
+        description: 'Libbox version (e.g., 1.10.0-beta.5 or latest)'
+        required: true
+        default: 'latest'
+        type: string
 
 env:
   SCHEME: SFI
   PRODUCT_NAME: sing-box
   CONFIGURATION: ${{ github.event.inputs.configuration || 'Debug' }}
+  LIBBOX_VERSION: ${{ github.event.inputs.libbox_version || 'latest' }}
 
 jobs:
   build:
@@ -51,6 +57,10 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-path
           xcrun --sdk iphoneos --show-sdk-version
 
+      - name: Install dependencies
+        run: |
+          brew install xcbeautify jq
+
       - name: Cache Swift packages
         uses: actions/cache@v4
         with:
@@ -61,15 +71,71 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-spm-
 
-      - name: Verify Libbox.xcframework exists
+      - name: Cache Libbox. xcframework
+        id: cache-libbox
+        uses: actions/cache@v4
+        with:
+          path: Libbox.xcframework
+          key: libbox-${{ env. LIBBOX_VERSION }}-${{ runner.os }}
+
+      - name: Download Libbox.xcframework
+        if: steps.cache-libbox.outputs. cache-hit != 'true'
         run: |
-          if [ ! -d "Libbox.xcframework" ]; then
-            echo "⚠️ Libbox.xcframework not found. You may need to build or download it."
-            echo "Please ensure the framework is available before building."
+          echo "📦 Downloading Libbox.xcframework..."
+          
+          if [ "${{ env.LIBBOX_VERSION }}" == "latest" ]; then
+            # Get the latest release (including pre-releases)
+            RELEASE_INFO=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases" | jq -r '[.[] | select(.assets[].name | contains("Libbox. xcframework"))] | first')
+            DOWNLOAD_URL=$(echo "$RELEASE_INFO" | jq -r '. assets[] | select(.name | contains("Libbox.xcframework")) | . browser_download_url')
+            VERSION=$(echo "$RELEASE_INFO" | jq -r '.tag_name')
+          else
+            # Get specific version
+            VERSION="v${{ env.LIBBOX_VERSION }}"
+            DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/${VERSION}/Libbox.xcframework.zip"
+          fi
+          
+          echo "📥 Downloading from: $DOWNLOAD_URL"
+          echo "📌 Version: $VERSION"
+          
+          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
+            echo "❌ Could not find Libbox.xcframework download URL"
+            echo "Attempting to build from source..."
+            
+            # Alternative: Build from source using gomobile
+            # This requires Go and gomobile to be installed
+            brew install go
+            go install golang.org/x/mobile/cmd/gomobile@latest
+            export PATH=$PATH:$(go env GOPATH)/bin
+            gomobile init
+            
+            # Clone sing-box and build
+            git clone --depth 1 https://github.com/SagerNet/sing-box.git /tmp/sing-box
+            cd /tmp/sing-box
+            make lib_ios
+            cp -r ./Libbox.xcframework $GITHUB_WORKSPACE/
+            cd $GITHUB_WORKSPACE
+          else
+            curl -L -o Libbox. xcframework.zip "$DOWNLOAD_URL"
+            unzip -o Libbox.xcframework.zip
+            rm -f Libbox.xcframework.zip
+          fi
+          
+          echo "✅ Libbox. xcframework downloaded successfully"
+          ls -la Libbox.xcframework/
+
+      - name: Verify Libbox.xcframework
+        run: |
+          if [ !  -d "Libbox.xcframework" ]; then
+            echo "❌ Libbox.xcframework not found after download"
             exit 1
           fi
-          echo "✅ Libbox. xcframework found"
+          echo "✅ Libbox. xcframework verified"
+          echo "📂 Framework contents:"
           ls -la Libbox.xcframework/
+          
+          # Show supported architectures
+          echo "📱 Supported platforms:"
+          ls -la Libbox.xcframework/ | grep -E "ios-|macos-|tvos-" || true
 
       - name: Resolve Swift packages
         run: |
@@ -92,13 +158,20 @@ jobs:
             PROVISIONING_PROFILE_SPECIFIER="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
             | xcbeautify --renderer github-actions || true
+          
+          # Check if build succeeded
+          if [ !  -d "DerivedData/Build/Products/${{ env.CONFIGURATION }}-iphoneos" ]; then
+            echo "❌ Build failed - no products directory found"
+            exit 1
+          fi
 
       - name: Locate built app
         id: locate_app
         run: |
-          APP_PATH=$(find DerivedData/Build/Products/${{ env.CONFIGURATION }}-iphoneos -name "*.app" -type d | head -1)
+          APP_PATH=$(find DerivedData/Build/Products/${{ env. CONFIGURATION }}-iphoneos -name "*.app" -type d | head -1)
           if [ -z "$APP_PATH" ]; then
             echo "❌ No . app found in build products"
+            echo "📂 Available build products:"
             find DerivedData -name "*.app" -type d
             exit 1
           fi
@@ -114,23 +187,46 @@ jobs:
         run: |
           find Payload -name "_CodeSignature" -type d -exec rm -rf {} + || true
           find Payload -name "*. mobileprovision" -delete || true
+          find Payload -name "embedded.mobileprovision" -delete || true
 
       - name: Create unsigned IPA
         run: |
-          zip -r "${{ env.PRODUCT_NAME }}-unsigned-${{ env.CONFIGURATION }}.ipa" Payload
+          zip -r "${{ env.PRODUCT_NAME }}-unsigned-${{ env.CONFIGURATION }}. ipa" Payload
+          echo "📦 IPA created:"
           ls -lh *.ipa
 
       - name: Generate build info
         run: |
-          echo "## Build Information" > build-info.md
-          echo "" >> build-info.md
-          echo "- **Commit:** ${{ github.sha }}" >> build-info.md
-          echo "- **Branch:** ${{ github.ref_name }}" >> build-info. md
-          echo "- **Configuration:** ${{ env.CONFIGURATION }}" >> build-info.md
-          echo "- **Scheme:** ${{ env.SCHEME }}" >> build-info.md
-          echo "- **Build Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> build-info.md
-          echo "- **Runner OS:** ${{ runner.os }}" >> build-info.md
-          echo "- **Xcode Version:** $(xcodebuild -version | head -1)" >> build-info.md
+          cat << EOF > build-info.md
+          ## Build Information
+          
+          | Property | Value |
+          |----------|-------|
+          | **Commit** | ${{ github.sha }} |
+          | **Branch** | ${{ github.ref_name }} |
+          | **Configuration** | ${{ env.CONFIGURATION }} |
+          | **Scheme** | ${{ env.SCHEME }} |
+          | **Build Date** | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |
+          | **Runner OS** | ${{ runner.os }} |
+          | **Xcode Version** | $(xcodebuild -version | head -1) |
+          | **Libbox Version** | ${{ env.LIBBOX_VERSION }} |
+          
+          ## Installation
+          
+          This is an **unsigned IPA** for development purposes.  To install:
+          
+          1. **AltStore**: Import the IPA file into AltStore
+          2. **Sideloadly**: Use Sideloadly to sign and install
+          3. **iOS App Signer**: Sign with your own certificate first
+          4. **TrollStore** (if available): Direct installation without signing
+          
+          ## Notes
+          
+          - This IPA is not signed and cannot be installed directly
+          - You need a valid Apple Developer certificate to sign it
+          - Free developer accounts have a 7-day expiration for sideloaded apps
+          EOF
+          
           cat build-info.md
 
       - name: Upload unsigned IPA artifact
@@ -138,7 +234,7 @@ jobs:
         with:
           name: ${{ env. PRODUCT_NAME }}-unsigned-${{ env.CONFIGURATION }}-${{ github.sha }}
           path: |
-            ${{ env.PRODUCT_NAME }}-unsigned-${{ env. CONFIGURATION }}.ipa
+            ${{ env.PRODUCT_NAME }}-unsigned-${{ env.CONFIGURATION }}.ipa
             build-info.md
           retention-days: 30
           if-no-files-found: error
@@ -161,16 +257,36 @@ jobs:
       - name: Build Status Summary
         run: |
           if [ "${{ needs.build.result }}" == "success" ]; then
-            echo "## ✅ Build Succeeded" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "The unsigned IPA has been built successfully and is available as an artifact." >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
-            echo "1.  Download the artifact from the Actions tab" >> $GITHUB_STEP_SUMMARY
-            echo "2. Use a signing tool (like iOS App Signer) or sign with your own certificate" >> $GITHUB_STEP_SUMMARY
-            echo "3. Install via AltStore, Sideloadly, or similar tools" >> $GITHUB_STEP_SUMMARY
+            cat << EOF >> $GITHUB_STEP_SUMMARY
+          ## ✅ Build Succeeded
+          
+          The unsigned IPA has been built successfully and is available as an artifact.
+          
+          ### 📥 Download
+          
+          Go to the **Actions** tab → Select this run → **Artifacts** section
+          
+          ### 📱 Next Steps
+          
+          1. Download the artifact ZIP file
+          2. Extract the IPA file
+          3.  Use one of these methods to install:
+             - **AltStore** - Import IPA directly
+             - **Sideloadly** - Sign and install in one step
+             - **iOS App Signer** - Sign manually, then install via Xcode/Finder
+             - **TrollStore** - Direct install (jailbroken/TrollStore devices)
+          EOF
           else
-            echo "## ❌ Build Failed" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Please check the build logs for more details." >> $GITHUB_STEP_SUMMARY
+            cat << EOF >> $GITHUB_STEP_SUMMARY
+          ## ❌ Build Failed
+          
+          Please check the build logs for more details.
+          
+          ### Common Issues
+          
+          1. **Libbox.xcframework not found** - Check if the download URL is correct
+          2. **Swift package resolution failed** - Try clearing the cache
+          3. **Code signing errors** - Ensure all signing is disabled
+          4. **Missing dependencies** - Check submodules are checked out
+          EOF
           fi
