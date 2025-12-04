@@ -29,12 +29,6 @@ jobs:
         with:
           xcode-version: latest-stable
       
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.23.x'
-          cache: false
-      
       - name: Install Dependencies
         run: |
           # Install CocoaPods if Podfile exists
@@ -43,101 +37,65 @@ jobs:
             pod install
           fi
           
-          # Install gomobile for building Libbox.xcframework
-          echo "Installing gomobile..."
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
-          
-          # Initialize gomobile
-          $(go env GOPATH)/bin/gomobile init
-          
-          # Swift Package Manager dependencies (handled by Xcode)
-          echo "Swift Package Manager dependencies will be resolved by Xcode"
+          echo "Dependencies check complete"
       
-      - name: Build Libbox.xcframework
+      - name: Download Pre-built Libbox.xcframework
         run: |
-          echo "Building Libbox.xcframework..."
+          echo "Downloading pre-built Libbox.xcframework..."
           
-          # Check if there's a Makefile with lib or lib_ios target
-          if [ -f "Makefile" ]; then
-            echo "Makefile found, checking for build targets..."
-            
-            if grep -q "^lib:" Makefile || grep -q "^lib_ios:" Makefile; then
-              echo "Using Makefile to build Libbox..."
-              make lib 2>/dev/null || make lib_ios 2>/dev/null || {
-                echo "Makefile targets failed, trying manual build..."
-                USE_MANUAL=true
-              }
-            else
-              echo "No lib target found in Makefile"
-              USE_MANUAL=true
-            fi
-          else
-            echo "No Makefile found"
-            USE_MANUAL=true
-          fi
+          # Get the latest sing-box release
+          LATEST_RELEASE=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "Latest release: $LATEST_RELEASE"
           
-          # If Makefile approach didn't work, build manually
-          if [ "$USE_MANUAL" = "true" ]; then
-            echo "Building libbox manually from sing-box repository..."
+          # Download the iOS framework asset
+          FRAMEWORK_URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST_RELEASE}/sing-box-${LATEST_RELEASE#v}-ios.tar.gz"
+          echo "Downloading from: $FRAMEWORK_URL"
+          
+          curl -L -o libbox-ios.tar.gz "$FRAMEWORK_URL" || {
+            echo "Failed to download from releases, trying alternative sources..."
             
-            # Create a temporary directory for the build
-            mkdir -p /tmp/sing-box-build
-            cd /tmp/sing-box-build
-            
-            # Clone sing-box repository
-            echo "Cloning sing-box repository..."
-            git clone --depth 1 https://github.com/SagerNet/sing-box.git
-            cd sing-box
-            
-            # Try using gomobile bind directly (most reliable method)
-            echo "Using gomobile bind to build libbox..."
-            
-            # Initialize gomobile
-            echo "Initializing gomobile..."
-            $(go env GOPATH)/bin/gomobile init
-            
-            # Build for iOS using gomobile bind
-            echo "Building libbox.xcframework for iOS..."
-            $(go env GOPATH)/bin/gomobile bind \
-              -target=ios \
-              -ldflags="-s -w" \
-              -o Libbox.xcframework \
-              github.com/sagernet/sing-box/experimental/libbox || {
-              echo "❌ Error: gomobile bind failed"
-              echo "Trying alternative build method..."
-              
-              # Fallback: try build_libbox if it exists
-              if [ -f "cmd/internal/build_libbox/main.go" ]; then
-                echo "Attempting build_libbox tool..."
-                go run ./cmd/internal/build_libbox -target ios 2>&1 || {
-                  echo "❌ Error: build_libbox also failed"
-                  exit 1
-                }
-              else
-                echo "❌ Error: No alternative build method available"
-                exit 1
+            # Try a few recent versions as fallback
+            for VERSION in "1.10.7" "1.10.6" "1.10.5" "1.10.0" "1.9.7"; do
+              echo "Trying version $VERSION..."
+              FRAMEWORK_URL="https://github.com/SagerNet/sing-box/releases/download/v${VERSION}/sing-box-${VERSION}-ios.tar.gz"
+              if curl -L -f -o libbox-ios.tar.gz "$FRAMEWORK_URL"; then
+                echo "Successfully downloaded version $VERSION"
+                break
               fi
-            }
-            
-            # Copy the built framework back to the project
-            if [ -d "Libbox.xcframework" ]; then
-              echo "Copying Libbox.xcframework to workspace..."
-              cp -r Libbox.xcframework $GITHUB_WORKSPACE/
-              cd $GITHUB_WORKSPACE
+            done
+          }
+          
+          # Extract the framework
+          echo "Extracting framework..."
+          tar -xzf libbox-ios.tar.gz
+          
+          # Find and rename the framework
+          if [ -d "Libbox.xcframework" ]; then
+            echo "✅ Libbox.xcframework found"
+          elif [ -d "libbox.xcframework" ]; then
+            mv libbox.xcframework Libbox.xcframework
+            echo "✅ Renamed libbox.xcframework to Libbox.xcframework"
+          else
+            echo "Searching for framework in extracted files..."
+            find . -name "*.xcframework" -type d
+            FRAMEWORK=$(find . -name "*.xcframework" -type d | head -n 1)
+            if [ -n "$FRAMEWORK" ]; then
+              mv "$FRAMEWORK" Libbox.xcframework
+              echo "✅ Found and renamed framework to Libbox.xcframework"
             else
-              echo "❌ Error: Libbox.xcframework was not created after build"
+              echo "❌ Error: No xcframework found in the archive"
+              echo "Archive contents:"
               ls -la
               exit 1
             fi
           fi
           
-          # Verify the framework exists in the workspace
+          # Verify the framework
           if [ -d "Libbox.xcframework" ]; then
-            echo "✅ Libbox.xcframework built successfully"
+            echo "✅ Libbox.xcframework ready"
             ls -la Libbox.xcframework
           else
-            echo "❌ Error: Libbox.xcframework was not found in workspace"
+            echo "❌ Error: Libbox.xcframework not found after extraction"
             exit 1
           fi
       
