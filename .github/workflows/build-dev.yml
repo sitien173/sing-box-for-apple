@@ -11,7 +11,7 @@ jobs:
     runs-on: macos-14
     
     steps:
-      - name: Checkout Code (Dev Branch)
+      - name: Checkout Code
         uses: actions/checkout@v4
         with:
           repository: SagerNet/sing-box-for-apple
@@ -23,17 +23,23 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Install Build Tools & Compile Framework
+      - name: Install Gomobile & Dependencies
         run: |
-          # 1. Install dependencies (gomobile, etc.)
-          make lib_install
+          # Manually install gomobile since 'make lib_install' was removed
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          gomobile init
           
-          # 2. Build the Go core (Libbox.xcframework)
+          # Install other potential dependencies
+          go mod download
+
+      - name: Build Core Framework
+        run: |
+          # Try to build the framework using the standard target
+          # If 'make lib_ios' fails, we will try to list targets to debug
           make lib_ios
 
       - name: Build Unsigned App
         run: |
-          # Build using xcodebuild without signing
           xcodebuild build \
             -project sing-box.xcodeproj \
             -scheme sing-box \
@@ -47,9 +53,7 @@ jobs:
       - name: Package IPA
         run: |
           mkdir Payload
-          # Move the compiled .app into the Payload folder
           cp -r build/Build/Products/Release-iphoneos/sing-box.app Payload/
-          # Zip it to create the IPA
           zip -r sing-box-dev-unsigned.ipa Payload
 
       - name: Upload Artifact
