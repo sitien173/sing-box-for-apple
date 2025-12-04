@@ -31,7 +31,7 @@ on:
 env:
   SCHEME: SFI
   PRODUCT_NAME: sing-box
-  CONFIGURATION: ${{ github.event.inputs.configuration || 'Debug' }}
+  CONFIGURATION: ${{ github.event.inputs. configuration || 'Debug' }}
   LIBBOX_VERSION: ${{ github.event.inputs.libbox_version || 'latest' }}
 
 jobs:
@@ -67,7 +67,7 @@ jobs:
           path: |
             ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
             . build
-          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved', '**/*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package. resolved', '**/*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
           restore-keys: |
             ${{ runner.os }}-spm-
 
@@ -76,57 +76,78 @@ jobs:
         uses: actions/cache@v4
         with:
           path: Libbox.xcframework
-          key: libbox-${{ env. LIBBOX_VERSION }}-${{ runner.os }}
+          key: libbox-${{ env.LIBBOX_VERSION }}-${{ runner.os }}
 
       - name: Download Libbox.xcframework
-        if: steps.cache-libbox.outputs. cache-hit != 'true'
+        if: steps.cache-libbox.outputs.cache-hit != 'true'
         run: |
           echo "📦 Downloading Libbox.xcframework..."
           
           if [ "${{ env.LIBBOX_VERSION }}" == "latest" ]; then
-            # Get the latest release (including pre-releases)
-            RELEASE_INFO=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases" | jq -r '[.[] | select(.assets[].name | contains("Libbox. xcframework"))] | first')
-            DOWNLOAD_URL=$(echo "$RELEASE_INFO" | jq -r '. assets[] | select(.name | contains("Libbox.xcframework")) | . browser_download_url')
-            VERSION=$(echo "$RELEASE_INFO" | jq -r '.tag_name')
+            # Get the latest release that contains Libbox.xcframework
+            echo "🔍 Finding latest release with Libbox.xcframework..."
+            
+            RELEASES=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases")
+            
+            # Find the first release that has Libbox.xcframework. zip asset
+            DOWNLOAD_URL=$(echo "$RELEASES" | jq -r '
+              [.[] | select(.assets[]?. name == "Libbox.xcframework. zip")] 
+              | first 
+              | .assets[] 
+              | select(.name == "Libbox.xcframework. zip") 
+              | .browser_download_url
+            ')
+            
+            VERSION=$(echo "$RELEASES" | jq -r '
+              [.[] | select(. assets[]?.name == "Libbox.xcframework.zip")] 
+              | first 
+              | .tag_name
+            ')
           else
             # Get specific version
             VERSION="v${{ env.LIBBOX_VERSION }}"
             DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/${VERSION}/Libbox.xcframework.zip"
           fi
           
-          echo "📥 Downloading from: $DOWNLOAD_URL"
+          echo "📥 Download URL: $DOWNLOAD_URL"
           echo "📌 Version: $VERSION"
           
           if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" == "null" ]; then
-            echo "❌ Could not find Libbox.xcframework download URL"
+            echo "❌ Could not find Libbox. xcframework download URL"
+            echo ""
+            echo "Available releases with Libbox.xcframework:"
+            curl -s "https://api.github.com/repos/SagerNet/sing-box/releases" | jq -r '. [] | select(.assets[]?.name == "Libbox. xcframework.zip") | "\(.tag_name): \(.html_url)"' | head -10
+            echo ""
             echo "Attempting to build from source..."
             
-            # Alternative: Build from source using gomobile
-            # This requires Go and gomobile to be installed
+            # Build from source using gomobile
             brew install go
-            go install golang.org/x/mobile/cmd/gomobile@latest
+            go install golang. org/x/mobile/cmd/gomobile@latest
             export PATH=$PATH:$(go env GOPATH)/bin
             gomobile init
             
             # Clone sing-box and build
-            git clone --depth 1 https://github.com/SagerNet/sing-box.git /tmp/sing-box
+            git clone --depth 1 https://github. com/SagerNet/sing-box.git /tmp/sing-box
             cd /tmp/sing-box
             make lib_ios
             cp -r ./Libbox.xcframework $GITHUB_WORKSPACE/
             cd $GITHUB_WORKSPACE
           else
-            curl -L -o Libbox. xcframework.zip "$DOWNLOAD_URL"
+            echo "⬇️ Downloading Libbox.xcframework..."
+            curl -L -o Libbox.xcframework.zip "$DOWNLOAD_URL"
+            
+            echo "📂 Extracting..."
             unzip -o Libbox.xcframework.zip
             rm -f Libbox.xcframework.zip
           fi
           
-          echo "✅ Libbox. xcframework downloaded successfully"
+          echo "✅ Libbox. xcframework ready"
           ls -la Libbox.xcframework/
 
       - name: Verify Libbox.xcframework
         run: |
           if [ !  -d "Libbox.xcframework" ]; then
-            echo "❌ Libbox.xcframework not found after download"
+            echo "❌ Libbox.xcframework not found"
             exit 1
           fi
           echo "✅ Libbox. xcframework verified"
@@ -135,7 +156,7 @@ jobs:
           
           # Show supported architectures
           echo "📱 Supported platforms:"
-          ls -la Libbox.xcframework/ | grep -E "ios-|macos-|tvos-" || true
+          find Libbox.xcframework -type d -name "*.framework" | head -5
 
       - name: Resolve Swift packages
         run: |
@@ -172,7 +193,7 @@ jobs:
           if [ -z "$APP_PATH" ]; then
             echo "❌ No . app found in build products"
             echo "📂 Available build products:"
-            find DerivedData -name "*.app" -type d
+            find DerivedData -name "*. app" -type d
             exit 1
           fi
           echo "APP_PATH=$APP_PATH" >> $GITHUB_OUTPUT
@@ -191,7 +212,7 @@ jobs:
 
       - name: Create unsigned IPA
         run: |
-          zip -r "${{ env.PRODUCT_NAME }}-unsigned-${{ env.CONFIGURATION }}. ipa" Payload
+          zip -r "${{ env.PRODUCT_NAME }}-unsigned-${{ env.CONFIGURATION }}.ipa" Payload
           echo "📦 IPA created:"
           ls -lh *.ipa
 
@@ -209,7 +230,7 @@ jobs:
           | **Build Date** | $(date -u '+%Y-%m-%d %H:%M:%S UTC') |
           | **Runner OS** | ${{ runner.os }} |
           | **Xcode Version** | $(xcodebuild -version | head -1) |
-          | **Libbox Version** | ${{ env.LIBBOX_VERSION }} |
+          | **Libbox Version** | ${{ env. LIBBOX_VERSION }} |
           
           ## Installation
           
@@ -260,7 +281,7 @@ jobs:
             cat << EOF >> $GITHUB_STEP_SUMMARY
           ## ✅ Build Succeeded
           
-          The unsigned IPA has been built successfully and is available as an artifact.
+          The unsigned IPA has been built successfully and is available as an artifact. 
           
           ### 📥 Download
           
@@ -280,7 +301,7 @@ jobs:
             cat << EOF >> $GITHUB_STEP_SUMMARY
           ## ❌ Build Failed
           
-          Please check the build logs for more details.
+          Please check the build logs for more details. 
           
           ### Common Issues
           
