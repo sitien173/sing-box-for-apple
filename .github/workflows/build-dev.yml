@@ -58,42 +58,62 @@ jobs:
         run: |
           echo "Building Libbox.xcframework..."
           
-          # Check if Makefile has lib_ios target
+          # Check if there's a Makefile with lib or lib_ios target
           if [ -f "Makefile" ]; then
-            if grep -q "lib_ios:" Makefile; then
+            echo "Makefile found, checking for build targets..."
+            
+            if grep -q "^lib:" Makefile || grep -q "^lib_ios:" Makefile; then
               echo "Using Makefile to build Libbox..."
-              make lib_ios
+              make lib 2>/dev/null || make lib_ios 2>/dev/null || {
+                echo "Makefile targets failed, trying manual build..."
+                USE_MANUAL=true
+              }
             else
-              echo "Makefile found but no lib_ios target"
-              echo "Building manually from sing-box repository..."
-              
-              # Clone sing-box repository
-              cd ..
-              git clone --depth 1 https://github.com/SagerNet/sing-box.git
-              cd sing-box
-              
-              # Build libbox for iOS
-              go run ./cmd/internal/build_libbox -target ios
-              
-              # Copy the built framework back to the project
-              cp -r Libbox.xcframework ../sing-box-for-apple/
-              cd ../sing-box-for-apple
+              echo "No lib target found in Makefile"
+              USE_MANUAL=true
             fi
           else
-            echo "No Makefile found, attempting alternative build method..."
+            echo "No Makefile found"
+            USE_MANUAL=true
+          fi
+          
+          # If Makefile approach didn't work, build manually
+          if [ "$USE_MANUAL" = "true" ]; then
+            echo "Building libbox manually from sing-box repository..."
+            
+            # Create a temporary directory for the build
+            mkdir -p /tmp/sing-box-build
+            cd /tmp/sing-box-build
             
             # Clone sing-box repository
-            cd ..
             git clone --depth 1 https://github.com/SagerNet/sing-box.git
             cd sing-box
             
-            # Build libbox for iOS
-            echo "Building libbox using sing-box build tool..."
-            go run ./cmd/internal/build_libbox -target ios
+            # Check if the build_libbox tool exists
+            if [ -f "cmd/internal/build_libbox/main.go" ]; then
+              echo "Building libbox using build_libbox tool..."
+              go run ./cmd/internal/build_libbox -target ios
+            else
+              # Alternative: use gomobile directly
+              echo "Using gomobile bind directly..."
+              
+              # Initialize gomobile
+              $(go env GOPATH)/bin/gomobile init
+              
+              # Build for iOS
+              $(go env GOPATH)/bin/gomobile bind -target=ios -ldflags="-s -w" \
+                -o Libbox.xcframework \
+                github.com/sagernet/sing-box/experimental/libbox
+            fi
             
             # Copy the built framework back to the project
-            cp -r Libbox.xcframework ../sing-box-for-apple/
-            cd ../sing-box-for-apple
+            if [ -d "Libbox.xcframework" ]; then
+              cp -r Libbox.xcframework $GITHUB_WORKSPACE/
+              cd $GITHUB_WORKSPACE
+            else
+              echo "❌ Error: Failed to build Libbox.xcframework"
+              exit 1
+            fi
           fi
           
           # Verify the framework exists
