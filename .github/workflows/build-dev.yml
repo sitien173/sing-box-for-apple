@@ -1,0 +1,60 @@
+name: Build sing-box Dev IPA
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+
+jobs:
+  build:
+    name: Build Unsigned IPA (Dev)
+    runs-on: macos-14
+    
+    steps:
+      - name: Checkout Code (Dev Branch)
+        uses: actions/checkout@v4
+        with:
+          repository: SagerNet/sing-box-for-apple
+          ref: dev
+          submodules: recursive
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install Build Tools & Compile Framework
+        run: |
+          # 1. Install dependencies (gomobile, etc.)
+          make lib_install
+          
+          # 2. Build the Go core (Libbox.xcframework)
+          make lib_ios
+
+      - name: Build Unsigned App
+        run: |
+          # Build using xcodebuild without signing
+          xcodebuild build \
+            -project sing-box.xcodeproj \
+            -scheme sing-box \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Package IPA
+        run: |
+          mkdir Payload
+          # Move the compiled .app into the Payload folder
+          cp -r build/Build/Products/Release-iphoneos/sing-box.app Payload/
+          # Zip it to create the IPA
+          zip -r sing-box-dev-unsigned.ipa Payload
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sing-box-dev-unsigned
+          path: sing-box-dev-unsigned.ipa
+          retention-days: 5
