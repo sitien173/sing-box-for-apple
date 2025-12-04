@@ -86,42 +86,58 @@ jobs:
             cd /tmp/sing-box-build
             
             # Clone sing-box repository
+            echo "Cloning sing-box repository..."
             git clone --depth 1 https://github.com/SagerNet/sing-box.git
             cd sing-box
             
-            # Check if the build_libbox tool exists
-            if [ -f "cmd/internal/build_libbox/main.go" ]; then
-              echo "Building libbox using build_libbox tool..."
-              go run ./cmd/internal/build_libbox -target ios
-            else
-              # Alternative: use gomobile directly
-              echo "Using gomobile bind directly..."
+            # Try using gomobile bind directly (most reliable method)
+            echo "Using gomobile bind to build libbox..."
+            
+            # Initialize gomobile
+            echo "Initializing gomobile..."
+            $(go env GOPATH)/bin/gomobile init
+            
+            # Build for iOS using gomobile bind
+            echo "Building libbox.xcframework for iOS..."
+            $(go env GOPATH)/bin/gomobile bind \
+              -target=ios \
+              -ldflags="-s -w" \
+              -o Libbox.xcframework \
+              github.com/sagernet/sing-box/experimental/libbox || {
+              echo "❌ Error: gomobile bind failed"
+              echo "Trying alternative build method..."
               
-              # Initialize gomobile
-              $(go env GOPATH)/bin/gomobile init
-              
-              # Build for iOS
-              $(go env GOPATH)/bin/gomobile bind -target=ios -ldflags="-s -w" \
-                -o Libbox.xcframework \
-                github.com/sagernet/sing-box/experimental/libbox
-            fi
+              # Fallback: try build_libbox if it exists
+              if [ -f "cmd/internal/build_libbox/main.go" ]; then
+                echo "Attempting build_libbox tool..."
+                go run ./cmd/internal/build_libbox -target ios 2>&1 || {
+                  echo "❌ Error: build_libbox also failed"
+                  exit 1
+                }
+              else
+                echo "❌ Error: No alternative build method available"
+                exit 1
+              fi
+            }
             
             # Copy the built framework back to the project
             if [ -d "Libbox.xcframework" ]; then
+              echo "Copying Libbox.xcframework to workspace..."
               cp -r Libbox.xcframework $GITHUB_WORKSPACE/
               cd $GITHUB_WORKSPACE
             else
-              echo "❌ Error: Failed to build Libbox.xcframework"
+              echo "❌ Error: Libbox.xcframework was not created after build"
+              ls -la
               exit 1
             fi
           fi
           
-          # Verify the framework exists
+          # Verify the framework exists in the workspace
           if [ -d "Libbox.xcframework" ]; then
             echo "✅ Libbox.xcframework built successfully"
             ls -la Libbox.xcframework
           else
-            echo "❌ Error: Libbox.xcframework was not created"
+            echo "❌ Error: Libbox.xcframework was not found in workspace"
             exit 1
           fi
       
