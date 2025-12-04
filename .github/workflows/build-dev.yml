@@ -29,6 +29,11 @@ jobs:
         with:
           xcode-version: latest-stable
       
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      
       - name: Install Dependencies
         run: |
           # Install CocoaPods if Podfile exists
@@ -37,8 +42,67 @@ jobs:
             pod install
           fi
           
-          # Install Swift Package Manager dependencies (handled by Xcode)
+          # Install gomobile for building Libbox.xcframework
+          echo "Installing gomobile..."
+          go install -v github.com/sagernet/gomobile/cmd/gomobile@v0.1.7
+          go install -v github.com/sagernet/gomobile/cmd/gobind@v0.1.7
+          
+          # Initialize gomobile
+          $(go env GOPATH)/bin/gomobile init
+          
+          # Swift Package Manager dependencies (handled by Xcode)
           echo "Swift Package Manager dependencies will be resolved by Xcode"
+      
+      - name: Build Libbox.xcframework
+        run: |
+          echo "Building Libbox.xcframework..."
+          
+          # Check if Makefile has lib_ios target
+          if [ -f "Makefile" ]; then
+            if grep -q "lib_ios:" Makefile; then
+              echo "Using Makefile to build Libbox..."
+              make lib_ios
+            else
+              echo "Makefile found but no lib_ios target"
+              echo "Building manually from sing-box repository..."
+              
+              # Clone sing-box repository
+              cd ..
+              git clone --depth 1 https://github.com/SagerNet/sing-box.git
+              cd sing-box
+              
+              # Build libbox for iOS
+              go run ./cmd/internal/build_libbox -target ios
+              
+              # Copy the built framework back to the project
+              cp -r Libbox.xcframework ../sing-box-for-apple/
+              cd ../sing-box-for-apple
+            fi
+          else
+            echo "No Makefile found, attempting alternative build method..."
+            
+            # Clone sing-box repository
+            cd ..
+            git clone --depth 1 https://github.com/SagerNet/sing-box.git
+            cd sing-box
+            
+            # Build libbox for iOS
+            echo "Building libbox using sing-box build tool..."
+            go run ./cmd/internal/build_libbox -target ios
+            
+            # Copy the built framework back to the project
+            cp -r Libbox.xcframework ../sing-box-for-apple/
+            cd ../sing-box-for-apple
+          fi
+          
+          # Verify the framework exists
+          if [ -d "Libbox.xcframework" ]; then
+            echo "✅ Libbox.xcframework built successfully"
+            ls -la Libbox.xcframework
+          else
+            echo "❌ Error: Libbox.xcframework was not created"
+            exit 1
+          fi
       
       - name: Display Xcode Version
         run: |
