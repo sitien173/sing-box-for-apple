@@ -45,31 +45,48 @@ jobs:
           xcodebuild -version
           swift --version
       
+      - name: List Repository Contents
+        run: |
+          echo "=== Root Directory Contents ==="
+          ls -la
+          echo ""
+          echo "=== Looking for Xcode projects ==="
+          find . -maxdepth 2 -name "*.xcodeproj" -o -name "*.xcworkspace"
+      
       - name: List Available Schemes
         run: |
-          if [ -f "*.xcworkspace" ]; then
-            xcodebuild -workspace *.xcworkspace -list
-          elif [ -f "*.xcodeproj" ]; then
-            xcodebuild -project *.xcodeproj -list
+          if compgen -G "*.xcworkspace" > /dev/null; then
+            WORKSPACE=$(ls -d *.xcworkspace | head -n 1)
+            echo "Found workspace: $WORKSPACE"
+            xcodebuild -workspace "$WORKSPACE" -list
+          elif compgen -G "*.xcodeproj" > /dev/null; then
+            PROJECT=$(ls -d *.xcodeproj | head -n 1)
+            echo "Found project: $PROJECT"
+            xcodebuild -project "$PROJECT" -list
+          else
+            echo "No Xcode workspace or project found in root directory"
+            echo "Searching subdirectories..."
+            find . -maxdepth 2 -name "*.xcodeproj" -o -name "*.xcworkspace"
           fi
       
       - name: Build iOS App (Unsigned)
         run: |
           # Determine if using workspace or project
-          if ls *.xcworkspace 1> /dev/null 2>&1; then
-            WORKSPACE=$(ls *.xcworkspace | head -n 1)
+          if compgen -G "*.xcworkspace" > /dev/null; then
+            WORKSPACE=$(ls -d *.xcworkspace | head -n 1)
             BUILD_CMD="-workspace $WORKSPACE"
-          elif ls *.xcodeproj 1> /dev/null 2>&1; then
-            PROJECT=$(ls *.xcodeproj | head -n 1)
+            echo "Using workspace: $WORKSPACE"
+          elif compgen -G "*.xcodeproj" > /dev/null; then
+            PROJECT=$(ls -d *.xcodeproj | head -n 1)
             BUILD_CMD="-project $PROJECT"
+            echo "Using project: $PROJECT"
           else
             echo "Error: No .xcworkspace or .xcodeproj found"
             exit 1
           fi
           
           # Build the app for iOS
-          # Adjust the scheme name based on your project
-          # Common scheme names: SFI, sing-box, or the app name
+          # Note: Replace "SFI" with the actual scheme name from your project
           xcodebuild clean build \
             $BUILD_CMD \
             -scheme "SFI" \
@@ -89,6 +106,8 @@ jobs:
           
           if [ -z "$APP_PATH" ]; then
             echo "Error: No .app bundle found"
+            echo "Searching in build directory..."
+            find ./build -type d -name "*.app"
             exit 1
           fi
           
