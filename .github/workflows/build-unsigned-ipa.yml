@@ -105,7 +105,9 @@ jobs:
             ')
           else
             # Get specific version
-            VERSION="v${{ env.LIBBOX_VERSION }}"
+            VERSION="${{ env.LIBBOX_VERSION }}"
+            # Add 'v' prefix if not already present
+            [[ "$VERSION" != v* ]] && VERSION="v${VERSION}"
             DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/${VERSION}/Libbox.xcframework.zip"
           fi
 
@@ -118,23 +120,15 @@ jobs:
             echo "Available releases with Libbox.xcframework:"
             curl -s "https://api.github.com/repos/SagerNet/sing-box/releases" | jq -r '.[] | select(.assets[]?.name == "Libbox.xcframework.zip") | "\(.tag_name): \(.html_url)"' | head -10
             echo ""
-            echo "Attempting to build from source..."
-
-            # Build from source using gomobile
-            brew install go
-            go install golang.org/x/mobile/cmd/gomobile@latest
-            export PATH=$PATH:$(go env GOPATH)/bin
-            gomobile init
-
-            # Clone sing-box and build
-            git clone --depth 1 https://github.com/SagerNet/sing-box.git /tmp/sing-box
-            cd /tmp/sing-box
-            make lib_ios
-            cp -r ./Libbox.xcframework $GITHUB_WORKSPACE/
-            cd $GITHUB_WORKSPACE
+            echo "❌ ERROR: Libbox.xcframework not available for the specified version"
+            echo "Please use one of the available versions listed above or 'latest'"
+            exit 1
           else
             echo "⬇️ Downloading Libbox.xcframework..."
-            curl -L -o Libbox.xcframework.zip "$DOWNLOAD_URL"
+            if ! curl -L -f -o Libbox.xcframework.zip "$DOWNLOAD_URL"; then
+              echo "❌ Failed to download Libbox.xcframework"
+              exit 1
+            fi
 
             echo "📂 Extracting..."
             unzip -o Libbox.xcframework.zip
@@ -166,6 +160,7 @@ jobs:
 
       - name: Build for iOS (Unsigned)
         run: |
+          set -o pipefail
           xcodebuild clean build \
             -scheme ${{ env.SCHEME }} \
             -configuration ${{ env.CONFIGURATION }} \
@@ -178,7 +173,7 @@ jobs:
             DEVELOPMENT_TEAM="" \
             PROVISIONING_PROFILE_SPECIFIER="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            | xcbeautify --renderer github-actions || true
+            | xcbeautify --renderer github-actions
 
           # Check if build succeeded
           if [ ! -d "DerivedData/Build/Products/${{ env.CONFIGURATION }}-iphoneos" ]; then
@@ -206,9 +201,21 @@ jobs:
 
       - name: Remove code signature (if any)
         run: |
-          find Payload -name "_CodeSignature" -type d -exec rm -rf {} + || true
-          find Payload -name "*.mobileprovision" -delete || true
-          find Payload -name "embedded.mobileprovision" -delete || true
+          echo "🔓 Removing code signatures..."
+          # Remove code signature directory
+          if find Payload -name "_CodeSignature" -type d -print0 | xargs -0 rm -rf; then
+            echo "✅ Removed _CodeSignature directories"
+          fi
+          # Remove provisioning profiles
+          PROFILES_FOUND=$(find Payload -name "*.mobileprovision" -o -name "embedded.mobileprovision")
+          if [ -n "$PROFILES_FOUND" ]; then
+            echo "Found provisioning profiles:"
+            echo "$PROFILES_FOUND"
+            find Payload \( -name "*.mobileprovision" -o -name "embedded.mobileprovision" \) -delete
+            echo "✅ Removed provisioning profiles"
+          else
+            echo "✅ No provisioning profiles found"
+          fi
 
       - name: Create unsigned IPA
         run: |
