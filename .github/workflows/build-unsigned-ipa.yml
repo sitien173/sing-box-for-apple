@@ -34,6 +34,9 @@ env:
   CONFIGURATION: ${{ github.event.inputs.configuration || 'Debug' }}
   LIBBOX_VERSION: ${{ github.event.inputs.libbox_version || 'latest' }}
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build Unsigned IPA
