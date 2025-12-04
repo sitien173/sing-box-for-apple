@@ -74,29 +74,53 @@ jobs:
             echo "No Package.swift, skipping SPM resolve"
           fi
 
-      - name: Auto-detect scheme (if not provided)
+      - name: Auto-detect scheme (robust)
         id: detect-scheme
         run: |
+          set -e
           if [ -n "$SCHEME" ]; then
             echo "Using scheme from input: $SCHEME"
             echo "SCHEME=$SCHEME" >> $GITHUB_ENV
             exit 0
           fi
-          echo "No scheme provided — listing schemes from project/workspace..."
-          # Use xcodebuild to list schemes; prefer workspace if provided
-          LIST_OUTPUT=$(xcodebuild -list -project "$PROJECT" 2>/dev/null || xcodebuild -list -workspace "$PROJECT" 2>/dev/null || true)
-          echo "$LIST_OUTPUT"
-          SCHEME_NAME=$(echo "$LIST_OUTPUT" | sed -n '/Schemes:/,$p' | tail -n +2 | sed -n '1p' | xargs)
-          if [ -z "$SCHEME_NAME" ]; then
-            # fallback: try scanning *.xcodeproj for scheme file name
-            if ls *.xcodeproj >/dev/null 2>&1; then
-              SCHEME_NAME="$(ls *.xcodeproj | sed 's/.xcodeproj//;q')"
-            fi
+
+          echo "No scheme provided — trying xcodebuild -list (project then workspace)..."
+          # Prefer workspace if it exists
+          if ls *.xcworkspace >/dev/null 2>&1; then
+            WB=$(ls *.xcworkspace | head -n1)
+            echo "Found workspace: $WB"
+            LIST_OUTPUT=$(xcodebuild -list -workspace "$WB" 2>/dev/null || true)
+          else
+            LIST_OUTPUT=$(xcodebuild -list -project "$PROJECT" 2>/dev/null || true)
           fi
+          echo "xcodebuild -list output:"
+          echo "$LIST_OUTPUT"
+
+          # Try to parse schemes from xcodebuild output
+          SCHEME_NAME=$(echo "$LIST_OUTPUT" | sed -n '/Schemes:/,$p' | tail -n +2 | sed -n '1p' | xargs || true)
+
+          # Fallback: scan xcshareddata/xcschemes for .xcscheme files
           if [ -z "$SCHEME_NAME" ]; then
-            echo "ERROR: Could not auto-detect scheme. Please set the 'scheme' input."
+            echo "No schemes from xcodebuild -list — scanning xcshareddata/xcschemes..."
+            for P in *.xcodeproj *.xcworkspace; do
+              if [ -d "$P/xcshareddata/xcschemes" ]; then
+                SCHEME_NAME=$(ls "$P/xcshareddata/xcschemes"/*.xcscheme 2>/dev/null | head -n1 || true)
+                if [ -n "$SCHEME_NAME" ]; then
+                  # filename is <SchemeName>.xcscheme
+                  SCHEME_NAME=$(basename "$SCHEME_NAME" .xcscheme)
+                  echo "Found scheme from $P: $SCHEME_NAME"
+                  break
+                fi
+              fi
+            done
+          fi
+
+          if [ -z "$SCHEME_NAME" ]; then
+            echo "ERROR: Could not auto-detect scheme. Please set the 'scheme' workflow input to the app scheme name."
+            echo "To list schemes locally: xcodebuild -list -project sing-box.xcodeproj"
             exit 1
           fi
+
           echo "Detected scheme: $SCHEME_NAME"
           echo "SCHEME=$SCHEME_NAME" >> $GITHUB_ENV
 
